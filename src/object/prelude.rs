@@ -3,7 +3,7 @@ pub use super::array::{
     JIntArrayPtr, JLongArrayPtr, JRefArray, JRefArrayPtr, JShortArrayPtr,
 };
 pub use super::class::{
-    Class, ClassAccessFlags, ClassPtr, ConstantPoolPtr, FieldArrayPtr, MethodArrayPtr,
+    Class, ClassAccessFlags, ClassPtr, ConstantPoolPtr, FieldArrayPtr, MethodArrayPtr, MethodPtr,
 };
 pub use super::ptr::Ptr;
 pub use super::symbol::{SymbolPtr, SymbolTable};

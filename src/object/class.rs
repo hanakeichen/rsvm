@@ -135,13 +135,16 @@ impl ConstantPool {
     pub fn set_utf8(&mut self, index: u16, value: SymbolPtr) {
         self.tags.set(index as JInt, ConstantTag::Utf8 as JByte);
         unsafe {
-            std::ptr::write(self.info.offset(index as isize), value as u64);
+            std::ptr::write(self.info.offset(index as isize), value.as_usize() as u64);
         }
     }
 
-    pub fn get_utf8(&self, index: u16) -> &String {
+    pub fn get_utf8(&self, index: u16) -> SymbolPtr {
         assert!(self.tags.get(index as JInt) == ConstantTag::Utf8 as JByte);
-        unsafe { return &*(std::ptr::read(self.info.offset(index as isize)) as SymbolPtr) }
+        unsafe {
+            let addr = std::ptr::read(self.info.offset(index as isize)) as usize;
+            return SymbolPtr::from_usize(addr);
+        }
     }
 
     pub fn set_int32(&mut self, index: u16, value: JInt) {
@@ -187,7 +190,8 @@ impl ConstantPool {
             assert!((name_index as i32) < self.tags.length());
             let name_index_tag = self.tags.get(name_index as JInt);
             assert!(name_index_tag == ConstantTag::Utf8 as JByte);
-            return std::ptr::read(self.info.offset(name_index as isize)) as SymbolPtr;
+            let addr = std::ptr::read(self.info.offset(name_index as isize)) as usize;
+            return SymbolPtr::from_usize(addr);
         }
     }
 

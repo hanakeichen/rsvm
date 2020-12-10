@@ -1,10 +1,11 @@
 // use super::{ClassPtr, Header, ObjectTag, Ptr};
 // use crate::global::Address;
+use super::ptr::Ptr;
 use std::collections::HashSet;
 
 // static mut SYMBOL_TABLE: HashSet<String> = HashSet::new();
 
-pub type SymbolPtr = *const String;
+pub type SymbolPtr = Ptr<String>;
 
 pub struct SymbolTable(HashSet<String>);
 
@@ -14,7 +15,7 @@ impl SymbolTable {
     }
 
     pub fn get_or_insert(&mut self, content: String) -> SymbolPtr {
-        self.0.get_or_insert(content) as SymbolPtr
+        SymbolPtr::new(self.0.get_or_insert(content))
     }
 }
 

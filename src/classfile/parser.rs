@@ -14,6 +14,13 @@ pub struct ClassParser<'a> {
 }
 
 impl<'a> ClassParser<'a> {
+    pub fn new(class_loader: &'a mut dyn ClassLoader, reader: Box<dyn ClassReader>) -> Self {
+        ClassParser {
+            class_loader,
+            reader,
+        }
+    }
+
     pub fn parse_class(&mut self) -> Result<Handle<Class>, ClassLoadErr> {
         let magic = self.reader.read_ubyte4()?;
         if magic != CLASS_FILE_MAGIC {
@@ -30,7 +37,7 @@ impl<'a> ClassParser<'a> {
         let class_name = cp.get_utf8(this_class);
         let super_class_index = self.reader.read_ubyte2()?;
         let super_class_name = cp.get_utf8(super_class_index);
-        let super_class = self.class_loader.resolve_class(super_class_name)?;
+        let super_class = self.class_loader.resolve_class(super_class_name.as_str())?;
         let interfaces = self.parse_interfaces(&cp)?;
         let fields = self.parse_fields(&cp)?;
         let methods = self.parse_methods(&cp)?;
@@ -160,7 +167,8 @@ impl<'a> ClassParser<'a> {
         let interfaces = Handle::new(JRefArray::new_obj_permanent(length as JInt));
         for index in 0..length {
             let class_name = cp.get_class_name(self.reader.read_ubyte2()?);
-            let class = self.class_loader.resolve_class(class_name)?;
+            let class_name = &*class_name;
+            let class = self.class_loader.resolve_class(class_name.as_str())?;
             if !class.is_interface() {
                 return Err("class file format error");
             }
@@ -284,7 +292,7 @@ impl<'a> ClassParser<'a> {
                     return Err("invalid constant pool index");
                 }
                 let attr_length = self.reader.read_ubyte4()?;
-                let attr_name = cp.get_utf8(attr_name_index).as_str();
+                let attr_name = cp.get_utf8(attr_name_index);
                 match attr_name.as_ref() {
                     "Code" => {
                         method.set_max_stack(self.reader.read_ubyte2()?);
