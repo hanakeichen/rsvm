@@ -1,77 +1,229 @@
+use super::class::JClassPtr;
 use super::prelude::*;
-use super::Header;
-// use crate::runtime::{BootstrapClassId, Runtime};
-use crate::global;
-use crate::vm;
+use crate::define_oop;
+use crate::memory::align;
+use crate::memory::heap::Heap;
+use crate::object::class::JClass;
+use crate::thread::ThreadPtr;
+use crate::vm::VMPtr;
 use std::mem::size_of;
+
+pub type JArrayPtr = Ptr<JArray>;
+
+define_oop!(
+    struct JArray {
+        length: JInt,
+        // data: Ptr<u8>,
+    }
+);
+
+impl JArray {
+    pub const DATA_OFFSET: usize = size_of::<JArray>();
+
+    pub fn new(length: JInt, jclass: JClassPtr, thread: ThreadPtr) -> Ptr<JArray> {
+        debug_assert!(jclass.class_data().is_array());
+        debug_assert!(jclass.class_data().component_type().is_not_null());
+        let component_type = jclass.class_data().component_type();
+        let size = Self::size(length, JClass::ref_size(component_type));
+        let mut array = Ptr::<JArray>::from_addr(Heap::alloc_obj_lab(size, thread));
+        array.initialize(length, jclass);
+        log::trace!(
+            "JArray::new component_type: {}, 0x{:x}, jclass: 0x{:x}",
+            component_type.name().as_str(),
+            array.as_isize(),
+            array.jclass().as_isize()
+        );
+        return array;
+    }
+
+    pub fn new_permanent(length: JInt, jclass: JClassPtr, thread: ThreadPtr) -> Ptr<JArray> {
+        debug_assert!(jclass.class_data().is_array());
+        debug_assert!(jclass.class_data().component_type().is_not_null());
+        let component_type = jclass.class_data().component_type();
+        let size = Self::size(length, JClass::ref_size(component_type));
+        let mut array = Ptr::<JArray>::from_addr(thread.heap().alloc_obj_permanent(size));
+        array.initialize(length, jclass);
+        return array;
+    }
+
+    pub fn new_internal_permanent(length: JInt, thread: ThreadPtr) -> Ptr<JArray> {
+        let jclass = thread.vm().shared_objs().internal_arr_cls;
+        debug_assert!(jclass.class_data().is_array());
+        debug_assert!(jclass.class_data().component_type().is_not_null());
+        let component_type = jclass.class_data().component_type();
+        let size = Self::size(length, JClass::ref_size(component_type));
+        let mut array = Ptr::<JArray>::from_addr(thread.heap().alloc_obj_permanent(size));
+        array.initialize(length, jclass);
+        return array;
+    }
+
+    pub fn new_obj_arr(length: JInt, thread: ThreadPtr) -> JArrayPtr {
+        let classes = thread.vm().preloaded_classes();
+        return Self::new(length, classes.jobject_arr_cls(), thread);
+    }
+
+    fn initialize(&mut self, length: JInt, jclass: JClassPtr) {
+        Object::init_header(JArrayPtr::from_ref(self).cast(), jclass);
+        self.length = length;
+    }
+
+    const fn size(length: JInt, ref_size: usize) -> usize {
+        debug_assert!(length >= 0);
+        return align(Self::DATA_OFFSET + ref_size * length as usize);
+    }
+
+    pub fn get_component_type(&self) -> JClassPtr {
+        self.jclass().class_data().component_type()
+    }
+
+    pub fn set(&self, index: JInt, value: ObjectPtr) {
+        debug_assert!(index < self.length(), "index out of bound");
+        *self.data().offset(index as isize) = value;
+    }
+
+    pub fn set_raw(&self, index: JInt, value: ObjectRawPtr) {
+        debug_assert!(index < self.length());
+        self.set(index, Ptr::from_raw(value));
+    }
+
+    pub fn get_raw(&self, index: JInt) -> ObjectRawPtr {
+        debug_assert!(index < self.length());
+        (*self.data().offset(index as isize)).as_mut_raw_ptr()
+    }
+
+    pub fn get(&self, index: JInt) -> ObjectPtr {
+        debug_assert!(index < self.length());
+        *self.data().offset(index as isize)
+    }
+
+    pub fn get_with_isize(&self, index: isize) -> ObjectPtr {
+        debug_assert!(index < self.length() as isize);
+        *self.data().offset(index)
+    }
+
+    pub fn length(&self) -> JInt {
+        self.length as JInt
+    }
+
+    pub fn data(&self) -> Ptr<ObjectPtr> {
+        Ptr::from_ref_offset_bytes(self, Self::DATA_OFFSET as isize)
+    }
+
+    pub fn copy_unchecked(
+        src: JArrayPtr,
+        src_pos: JInt,
+        dest: JArrayPtr,
+        dest_pos: JInt,
+        length: JInt,
+    ) {
+        unsafe {
+            std::ptr::copy(
+                src.data().offset(src_pos as isize).as_raw_ptr(),
+                dest.data().offset(dest_pos as isize).as_mut_raw_ptr(),
+                length as usize,
+            );
+        }
+    }
+
+    pub fn copy_from_raw(&mut self, value: Ptr<ObjectPtr>, length: JInt) {
+        unsafe {
+            std::ptr::copy(
+                value.as_raw_ptr(),
+                self.data().as_mut_raw_ptr(),
+                length as usize,
+            );
+        }
+    }
+
+    pub fn is_compatible(&self, val: ObjectPtr, vm: VMPtr) -> bool {
+        let component_type = self.jclass().class_data().component_type();
+        if val.is_null() {
+            return !JClass::is_primitive(component_type);
+        }
+        return component_type.is_assignable_from(val.jclass(), vm);
+    }
+}
 
 macro_rules! DEFINE_TYPED_ARRAY {
     ($element_type:ident, $array_name:ident, $array_typed_class:expr) => {
+        #[derive(Debug)]
         pub struct $array_name {
-            header: Header,
-            length: JInt,
-            data: Ptr<$element_type>,
         }
 
+        #[allow(unused)]
         impl $array_name {
-            pub fn new(length: JInt) -> Ptr<$array_name> {
-                let size = Self::object_size(length);
-                let mut array = Ptr::<$array_name>::from_addr(vm::instance().heap.alloc_obj(size));
-                array.initialize(length);
-                return array;
-            }
 
-            pub fn new_permanent(length: JInt) -> Ptr<$array_name> {
-                let size = Self::object_size(length);
-                let mut array =
-                    Ptr::<$array_name>::from_addr(vm::instance().heap.alloc_obj_permanent(size));
-                array.initialize(length);
-                return array;
-            }
-
-            fn initialize(&mut self, length: JInt) {
-                self.header.initialize($array_typed_class);
-                self.length = length;
-                let data_ptr = self.data.as_mut_ptr();
-                for i in 0..length {
-                    unsafe {
-                        std::ptr::write(data_ptr.offset(i as isize), $element_type::default());
-                    }
-                }
-            }
-
-            fn object_size(length: JInt) -> usize {
+            pub fn size(length: JInt) -> usize {
                 assert!(length >= 0);
-                return size_of::<Header>()
-                    + size_of::<JInt>()
-                    + size_of::<$element_type>() * length as usize;
+                return align(JArray::DATA_OFFSET + size_of::<$element_type>() * length as usize);
             }
 
             pub fn set(&self, index: JInt, value: $element_type) {
-                assert!(index < self.length, "index out of bound");
+                assert!(index < self.length(), "index out of bound");
                 unsafe {
-                    std::ptr::write(self.data.as_mut_ptr().offset(index as isize), value);
+                    std::ptr::write(self.data().as_mut_raw_ptr().offset(index as isize), value);
                 }
             }
 
             pub fn get(&self, index: JInt) -> $element_type {
                 unsafe {
-                    return *self.data.as_mut_ptr().offset(index as isize);
+                    return *self.data().as_mut_raw_ptr().offset(index as isize);
                 }
             }
 
             pub fn length(&self) -> JInt {
-                self.length
+                let arr: &JArray = unsafe { std::mem::transmute(self) };
+                arr.length as JInt
             }
 
-            pub fn raw_data(&self) -> Ptr<$element_type> {
-                self.data
+            pub fn data(&self) -> Ptr<$element_type> {
+                Ptr::from_ref_offset_bytes(self, JArray::DATA_OFFSET as isize)
+            }
+
+            pub fn to_slice(&self) -> &[$element_type] {
+                return unsafe {
+                    &*std::ptr::slice_from_raw_parts(
+                        self.data().as_raw_ptr() as _,
+                        self.length() as usize,
+                    )
+                };
+            }
+
+            pub fn set_length(&mut self, length: JInt) {
+                let arr: &mut JArray = unsafe { std::mem::transmute(self) };
+                arr.length = length;
+            }
+
+            pub fn copy_unchecked(
+                src: Ptr<$array_name>,
+                src_pos: JInt,
+                dest: Ptr<$array_name>,
+                dest_pos: JInt,
+                length: JInt,
+            ) {
+                unsafe {
+                    std::ptr::copy(
+                        src.data().offset(src_pos as isize).as_raw_ptr(),
+                        dest.data().offset(dest_pos as isize).as_mut_raw_ptr(),
+                        length as usize,
+                    );
+                }
+            }
+
+            pub fn copy_from_raw(&mut self, value: Ptr<$element_type>, length: JInt) {
+                unsafe {
+                    std::ptr::copy(
+                        value.as_raw_ptr(),
+                        self.data().as_mut_raw_ptr(),
+                        length as usize,
+                    );
+                }
             }
         }
     };
 }
 
-DEFINE_TYPED_ARRAY!(JBoolean, JBooleanArray, global::classes::cclass());
+DEFINE_TYPED_ARRAY!(JBoolean, JBooleanArray, global::classes::boolean_class());
 DEFINE_TYPED_ARRAY!(JChar, JCharArray, global::classes::char_class());
 DEFINE_TYPED_ARRAY!(JByte, JByteArray, global::classes::byte_class());
 DEFINE_TYPED_ARRAY!(JShort, JShortArray, global::classes::short_class());
@@ -80,7 +232,6 @@ DEFINE_TYPED_ARRAY!(JLong, JLongArray, global::classes::long_class());
 DEFINE_TYPED_ARRAY!(JFloat, JFloatArray, global::classes::float_class());
 DEFINE_TYPED_ARRAY!(JDouble, JDoubleArray, global::classes::double_class());
 
-pub type JBooleanArrayPtr = Ptr<JBooleanArray>;
 pub type JCharArrayPtr = Ptr<JCharArray>;
 pub type JByteArrayPtr = Ptr<JByteArray>;
 pub type JShortArrayPtr = Ptr<JShortArray>;
@@ -88,112 +239,3 @@ pub type JIntArrayPtr = Ptr<JIntArray>;
 pub type JLongArrayPtr = Ptr<JLongArray>;
 pub type JFloatArrayPtr = Ptr<JFloatArray>;
 pub type JDoubleArrayPtr = Ptr<JDoubleArray>;
-pub type JRefArrayPtr = Ptr<JRefArray>;
-
-pub struct MultiArrayClass {
-    header: Header,
-    name: SymbolPtr,
-    dimension: JInt,
-}
-
-impl MultiArrayClass {
-    pub fn new(array_class: ClassPtr, dimension: JInt) -> Ptr<Self> {
-        let mut result: Ptr<Self> =
-            Ptr::from_addr(vm::instance().heap.alloc_obj_permanent(Self::size()));
-        result.header.initialize(global::classes::cclass());
-        result.name = array_class.name();
-        result.dimension = dimension;
-        return result;
-    }
-
-    pub fn size() -> usize {
-        size_of::<MultiArrayClass>()
-    }
-}
-
-pub struct MultiArray {
-    header: Header,
-    length: JInt,
-    data: Ptr<ObjectPtr>,
-}
-
-impl MultiArray {
-    pub fn new(array_class: ClassPtr, dimension: JInt, length: JInt) -> Ptr<MultiArray> {
-        assert!(dimension > 1);
-        let mut result: Ptr<MultiArray> = Ptr::from_addr(
-            vm::instance()
-                .heap
-                .alloc_obj_permanent(Self::size(dimension, length)),
-        );
-        result
-            .header
-            .initialize(MultiArrayClass::new(array_class, dimension).cast());
-        result.length = length;
-        for i in 0..dimension - 1 {
-            // TODO initialize dimensionn array
-        }
-        return result;
-    }
-
-    pub fn size(dimension: JInt, length: JInt) -> usize {
-        Header::size() + size_of::<JInt>() + size_of::<ObjectPtr>() * length as usize
-    }
-}
-
-pub struct JRefArray {
-    header: Header,
-    length: JInt,
-    data: Ptr<ObjectPtr>,
-}
-
-impl JRefArray {
-    pub fn new(length: JInt, class: ClassPtr) -> JRefArrayPtr {
-        let size = Self::object_size(length);
-        let mut array = JRefArrayPtr::from_addr(vm::instance().heap.alloc_obj(size));
-        array.initialize(length, class);
-        return array;
-    }
-
-    pub fn new_permanent(length: JInt, class: ClassPtr) -> JRefArrayPtr {
-        let size = Self::object_size(length);
-        let mut array = JRefArrayPtr::from_addr(vm::instance().heap.alloc_obj_permanent(size));
-        array.initialize(length, class);
-        return array;
-    }
-
-    pub fn new_obj_permanent(length: JInt) -> JRefArrayPtr {
-        Self::new_permanent(length, global::classes::obj_class())
-    }
-
-    fn initialize(&mut self, length: JInt, class: ClassPtr) {
-        self.header.initialize(class);
-        self.length = length;
-        let data_ptr = self.data.as_mut_ptr();
-        for i in 0..length {
-            unsafe {
-                std::ptr::write(data_ptr.offset(i as isize), ObjectPtr::null());
-            }
-        }
-    }
-
-    fn object_size(length: JInt) -> usize {
-        assert!(length >= 0);
-        return size_of::<Header>() + size_of::<JInt>() + size_of::<ObjectPtr>() * length as usize;
-    }
-
-    pub fn set(&self, index: JInt, value: ObjectPtr) {
-        assert!(index < self.length, "index out of bound");
-        assert!(value.is_jobject());
-        unsafe { std::ptr::write(self.data.as_mut_ptr().offset(index as isize), value) }
-    }
-
-    pub fn get(&self, index: JInt) -> ObjectPtr {
-        unsafe {
-            return *self.data.as_mut_ptr().offset(index as isize);
-        }
-    }
-
-    pub fn length(&self) -> JInt {
-        self.length
-    }
-}
